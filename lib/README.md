@@ -11,6 +11,7 @@ Download `onnxruntime.dll` and place it here:
 3. Extract and copy `lib/onnxruntime.dll` to this folder
 
 Or run in PowerShell:
+
 ```powershell
 $v = "1.16.3"
 Invoke-WebRequest "https://github.com/microsoft/onnxruntime/releases/download/v$v/onnxruntime-win-x64-$v.zip" -OutFile ort.zip
@@ -34,6 +35,7 @@ rm -rf onnxruntime-linux-x64-$v*
 ## Configuration
 
 Set in `.env`:
+
 ```
 SKYCLF_ORT_LIB=./lib/onnxruntime.dll   # Windows
 SKYCLF_ORT_LIB=./lib/libonnxruntime.so # Linux
