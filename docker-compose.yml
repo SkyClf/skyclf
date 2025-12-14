@@ -1,6 +1,6 @@
 services:
   skyclf:
-    build: .
+    image: ghcr.io/skyclf/skyclf:latest
     container_name: skyclf
     restart: unless-stopped
     ports:
@@ -28,12 +28,9 @@ services:
       retries: 3
       start_period: 10s
 
-  # Trainer - built but not started by default (Go backend starts it)
+  # Trainer - pulled but not started by default (Go backend starts it)
   trainer:
-    build:
-      context: ../SkyClf-Trainer
-      dockerfile: Dockerfile
-    image: skyclf-trainer:local
+    image: ghcr.io/skyclf/skyclf-trainer:latest
     container_name: skyclf-trainer
     restart: "no"
     volumes:
