@@ -15,12 +15,13 @@ import (
 
 // TrainConfig holds the training parameters from the UI
 type TrainConfig struct {
-	Epochs    int    `json:"epochs"`
-	BatchSize int    `json:"batch_size"`
-	LR        string `json:"lr"` // e.g. "0.001"
-	ImageSize int    `json:"img_size"`
-	Seed      int    `json:"seed"`
-	ValSplit  string `json:"val_split"` // e.g. "0.2"
+	Epochs      int    `json:"epochs"`
+	BatchSize   int    `json:"batch_size"`
+	LR          string `json:"lr"` // e.g. "0.001"
+	ImageSize   int    `json:"img_size"`
+	Seed        int    `json:"seed"`
+	ValSplit    string `json:"val_split"` // e.g. "0.2"
+	FromScratch bool   `json:"from_scratch"` // Train from scratch instead of resuming
 }
 
 // DefaultTrainConfig returns sensible defaults
@@ -151,6 +152,9 @@ func (t *Trainer) Start(ctx context.Context, cfg TrainConfig) error {
 		"--img", fmt.Sprintf("%d", cfg.ImageSize),
 		"--seed", fmt.Sprintf("%d", cfg.Seed),
 		"--val", cfg.ValSplit,
+	}
+	if cfg.FromScratch {
+		cmd = append(cmd, "--from-scratch")
 	}
 
 	// Remove old container

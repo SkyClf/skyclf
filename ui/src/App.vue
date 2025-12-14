@@ -53,6 +53,7 @@ const error = ref("");
 const epochs = ref(10);
 const batchSize = ref(16);
 const learningRate = ref("0.001");
+const fromScratch = ref(false);
 const modelInfo = ref<ModelInfo>({ active: null });
 
 let pollInterval: number | null = null;
@@ -249,6 +250,7 @@ async function startTraining() {
         img_size: 224,
         seed: 42,
         val_split: "0.2",
+        from_scratch: fromScratch.value,
       }),
     });
     const data = await res.json();
@@ -634,6 +636,25 @@ onUnmounted(() => {
                 <span class="field-hint">Step size (e.g. 0.001)</span>
               </div>
             </div>
+
+            <!-- From Scratch Option -->
+            <label class="scratch-toggle">
+              <input type="checkbox" v-model="fromScratch" />
+              <span
+                class="mdi"
+                :class="fromScratch ? 'mdi-restart' : 'mdi-school'"
+              ></span>
+              <div class="scratch-content">
+                <span class="scratch-label">{{
+                  fromScratch ? "Train from scratch" : "Continue learning"
+                }}</span>
+                <span class="scratch-hint">{{
+                  fromScratch
+                    ? "Start with a fresh model"
+                    : "Build upon previous model"
+                }}</span>
+              </div>
+            </label>
           </div>
 
           <!-- Action Buttons -->
@@ -1413,6 +1434,51 @@ body {
 .field-hint {
   font-size: 0.75rem;
   color: #52525b;
+}
+
+.scratch-toggle {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 1rem 1.25rem;
+  background: #18181b;
+  border: 1px solid #27272a;
+  border-radius: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  margin-top: 1rem;
+}
+
+.scratch-toggle:hover {
+  border-color: #3f3f46;
+}
+
+.scratch-toggle input {
+  display: none;
+}
+
+.scratch-toggle .mdi {
+  font-size: 1.5rem;
+  color: #8b5cf6;
+}
+
+.scratch-toggle input:checked ~ .mdi {
+  color: #f59e0b;
+}
+
+.scratch-content {
+  display: flex;
+  flex-direction: column;
+}
+
+.scratch-label {
+  font-weight: 500;
+  color: #fafafa;
+}
+
+.scratch-hint {
+  font-size: 0.8125rem;
+  color: #71717a;
 }
 
 .actions {
