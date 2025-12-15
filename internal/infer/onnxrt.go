@@ -40,7 +40,7 @@ func NewORTPredictor(modelsDir string) (*ORTPredictor, error) {
 	}
 
 	log.Printf("[infer] scanning models in %s", modelsDir)
-	mi, err := FindLatestSkyStateModel(modelsDir)
+	mi, err := FindSkyStateModel(modelsDir, "")
 	if err != nil {
 		return nil, err
 	}
@@ -126,8 +126,8 @@ func (p *ORTPredictor) Close() error {
 	return nil
 }
 
-// Reload scans for new models and loads the latest one
-func (p *ORTPredictor) Reload(modelsDir string) error {
+// Reload scans for new models and loads the latest one, or a specific version if provided.
+func (p *ORTPredictor) Reload(modelsDir string, version string) error {
 	if p == nil {
 		return fmt.Errorf("predictor is nil")
 	}
@@ -136,9 +136,9 @@ func (p *ORTPredictor) Reload(modelsDir string) error {
 		modelsDir = p.modelsDir
 	}
 	
-	log.Printf("[infer] reloading models from %s", modelsDir)
+	log.Printf("[infer] reloading models from %s (version=%s)", modelsDir, version)
 	
-	mi, err := FindLatestSkyStateModel(modelsDir)
+	mi, err := FindSkyStateModel(modelsDir, version)
 	if err != nil {
 		return fmt.Errorf("scan models: %w", err)
 	}

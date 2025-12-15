@@ -90,7 +90,7 @@ func main() {
 	datasetHandler := api.NewDatasetHandler(st)
 	datasetHandler.RegisterRoutes(mux)
 
-	latestHandler := api.NewLatestHandler(st, cfg.ImagesDir, pred)
+	latestHandler := api.NewLatestHandler(st, cfg.ImagesDir, cfg.ModelsDir, pred)
 	latestHandler.RegisterRoutes(mux)
 
 	// Trainer API (start/stop/status)
@@ -104,7 +104,7 @@ func main() {
 		tr.OnComplete = func() {
 			log.Printf("trainer: reloading models after training completion")
 			if pred != nil {
-				if err := pred.Reload(cfg.ModelsDir); err != nil {
+				if err := pred.Reload(cfg.ModelsDir, ""); err != nil {
 					log.Printf("trainer: model reload error: %v", err)
 				}
 			}
@@ -121,7 +121,8 @@ func main() {
 			http.Error(w, `{"error":"predictor not initialized"}`, http.StatusInternalServerError)
 			return
 		}
-		if err := pred.Reload(cfg.ModelsDir); err != nil {
+		version := r.URL.Query().Get("version")
+		if err := pred.Reload(cfg.ModelsDir, version); err != nil {
 			http.Error(w, fmt.Sprintf(`{"error":"%s"}`, err.Error()), http.StatusInternalServerError)
 			return
 		}

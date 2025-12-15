@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted } from "vue";
+import { ref, computed, onMounted, onUnmounted, watch } from "vue";
 import logoSvg from "./assets/SkyClfLogo.svg";
 
 // ============ Types ============
@@ -55,6 +55,12 @@ const batchSize = ref(16);
 const learningRate = ref("0.001");
 const fromScratch = ref(false);
 const modelInfo = ref<ModelInfo>({ active: null });
+const modelVersions = ref<any[]>([]);
+const selectedModelVersion = ref<string | null>(null);
+const selectedModelFormat = ref<string>("model.onnx");
+const switchingModel = ref(false);
+const modelActionMessage = ref("");
+const lastReloadedRunId = ref<string | null>(null);
 
 let pollInterval: number | null = null;
 
@@ -282,14 +288,117 @@ async function stopTraining() {
   }
 }
 
-async function reloadModels() {
+async function reloadModels(version?: string) {
   try {
-    await fetch("/api/models/reload", { method: "POST" });
+    const q = version ? `?version=${encodeURIComponent(version)}` : "";
+    await fetch(`/api/models/reload${q}`, { method: "POST" });
     await fetchModelInfo();
   } catch (e) {
     console.error("Failed to reload models:", e);
   }
 }
+
+async function fetchModelVersions() {
+  try {
+    const res = await fetch("/api/models/list");
+    if (res.ok) {
+      modelVersions.value = await res.json();
+    }
+  } catch (e) {
+    modelVersions.value = [];
+  }
+}
+
+function pickFormatsForVersion(version: string | null) {
+  if (!version) return [];
+  const item = modelVersions.value.find((m) => m.version === version);
+  if (!item) return [];
+  const formats: string[] = [];
+  if (item["model.onnx"]) formats.push("model.onnx");
+  if (item["model.pt"]) formats.push("model.pt");
+  return formats;
+}
+
+function syncSelectedModel() {
+  const list = modelVersions.value;
+  const active = modelInfo.value.active;
+  let target = selectedModelVersion.value;
+  if (!target || !list.some((m) => m.version === target)) {
+    if (active && list.some((m) => m.version === active)) {
+      target = active;
+    } else if (list.length) {
+      target = list[0].version;
+    } else {
+      target = null;
+    }
+  }
+  selectedModelVersion.value = target;
+  const formats = pickFormatsForVersion(target);
+  if (!formats.includes(selectedModelFormat.value) && formats.length) {
+    selectedModelFormat.value = formats[0] || selectedModelFormat.value;
+  }
+}
+
+const downloadHref = computed(() => {
+  const v = selectedModelVersion.value;
+  if (!v) return "/api/models/download";
+  const formats = pickFormatsForVersion(v);
+  const chosen = formats.includes(selectedModelFormat.value)
+    ? selectedModelFormat.value
+    : formats[0];
+  if (!chosen) return `/api/models/download?version=${encodeURIComponent(v)}`;
+  return `/api/models/download?version=${encodeURIComponent(
+    v
+  )}&file=${encodeURIComponent(chosen)}`;
+});
+
+async function useSelectedModel() {
+  if (!selectedModelVersion.value) return;
+  switchingModel.value = true;
+  modelActionMessage.value = "";
+  try {
+    await reloadModels(selectedModelVersion.value);
+    await fetchModelVersions();
+    modelActionMessage.value = `Model switched to ${selectedModelVersion.value}`;
+  } catch (e) {
+    console.error("Failed to switch model", e);
+    modelActionMessage.value = "Could not switch model";
+  } finally {
+    switchingModel.value = false;
+  }
+}
+
+// Update model list on mount and after training
+onMounted(() => {
+  fetchModelVersions();
+});
+
+watch([status, modelInfo], () => {
+  fetchModelVersions();
+  syncSelectedModel();
+});
+
+watch(modelVersions, () => {
+  syncSelectedModel();
+});
+
+watch(status, (newVal) => {
+  const runId = newVal?.started_at || null;
+  const justFinished =
+    newVal &&
+    !newVal.running &&
+    newVal.exit_code === 0 &&
+    runId !== null &&
+    lastReloadedRunId.value !== runId;
+  if (justFinished) {
+    lastReloadedRunId.value = runId;
+    reloadModels();
+    fetchModelVersions();
+  }
+  if (newVal?.running) {
+    lastReloadedRunId.value = null;
+  }
+});
 
 // ============ Lifecycle ============
 onMounted(() => {
@@ -677,6 +786,125 @@ onUnmounted(() => {
               <span class="mdi mdi-stop"></span>
               {{ loading ? "Stopping..." : "Stop Training" }}
             </button>
+          </div>
+
+          <!-- Download Model Button -->
+          <div class="download-section">
+            <div class="model-card">
+              <div class="model-card-header">
+                <div>
+                  <h3>Models</h3>
+                  <p class="muted">
+                    Download or activate a specific version for inference
+                  </p>
+                </div>
+                <span class="pill">
+                  Active: {{ modelInfo.active || "None" }}
+                </span>
+              </div>
+
+              <div class="model-controls">
+                <label class="model-field">
+                  <span>Version</span>
+                  <select v-model="selectedModelVersion">
+                    <option
+                      v-for="m in modelVersions"
+                      :key="m.version"
+                      :value="m.version"
+                    >
+                      {{ m.version }}
+                      <template v-if="m.created_at">
+                        ({{ new Date(m.created_at).toLocaleString() }})
+                      </template>
+                    </option>
+                    <option v-if="!modelVersions.length" disabled>
+                      No models available
+                    </option>
+                  </select>
+                </label>
+                <label class="model-field">
+                  <span>Format</span>
+                  <select
+                    v-model="selectedModelFormat"
+                    :disabled="
+                      !selectedModelVersion ||
+                      !pickFormatsForVersion(selectedModelVersion).length
+                    "
+                  >
+                    <option
+                      v-for="fmt in pickFormatsForVersion(selectedModelVersion)"
+                      :key="fmt"
+                      :value="fmt"
+                    >
+                      {{ fmt === "model.onnx" ? "ONNX" : "PyTorch (.pt)" }}
+                    </option>
+                  </select>
+                </label>
+                <div class="model-actions">
+                  <a
+                    :href="downloadHref"
+                    class="btn-download wide"
+                    download
+                    :class="{ disabled: !selectedModelVersion }"
+                  >
+                    <span class="mdi mdi-download"></span>
+                    Download
+                  </a>
+                  <button
+                    class="btn-primary ghost"
+                    @click="useSelectedModel"
+                    :disabled="!selectedModelVersion || switchingModel"
+                  >
+                    <span class="mdi mdi-rocket-launch"></span>
+                    {{ switchingModel ? "Switching..." : "Use this version" }}
+                  </button>
+                </div>
+                <p v-if="modelActionMessage" class="model-action-message">
+                  {{ modelActionMessage }}
+                </p>
+              </div>
+
+              <div v-if="modelVersions.length" class="model-list">
+                <h3>All Versions</h3>
+                <ul>
+                  <li v-for="m in modelVersions" :key="m.version">
+                    <div class="model-version-row">
+                      <div>
+                        <span class="model-version">{{ m.version }}</span>
+                        <span v-if="m.created_at" class="model-created"
+                          >· {{ new Date(m.created_at).toLocaleString() }}</span
+                        >
+                      </div>
+                      <div class="model-links">
+                        <a
+                          v-if="m['model.onnx']"
+                          :href="m['model.onnx']"
+                          class="btn-download btn-small"
+                          download
+                        >
+                          <span class="mdi mdi-download"></span>ONNX
+                        </a>
+                        <a
+                          v-if="m['model.pt']"
+                          :href="m['model.pt']"
+                          class="btn-download btn-small"
+                          download
+                        >
+                          <span class="mdi mdi-download"></span>PyTorch
+                        </a>
+                      </div>
+                    </div>
+                  </li>
+                </ul>
+              </div>
+            </div>
+          </div>
+
+          <div class="info-note">
+            <span class="mdi mdi-database"></span>
+            Labeled images stay in <code>/data/images</code> and labels in
+            <code>/data/labels/labels.db</code>. Training never deletes them, so
+            you can retrain or audit later.
           </div>
 
           <!-- Error Message -->
@@ -1529,6 +1757,31 @@ body {
   cursor: default;
 }
 
+.btn-download {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.5em;
+  padding: 0.75em 1.2em;
+  background: linear-gradient(135deg, #2563eb, #7c3aed);
+  color: #fff;
+  border-radius: 10px;
+  text-decoration: none;
+  font-weight: 600;
+  transition: background 0.2s, transform 0.2s;
+  font-size: 1rem;
+  border: 1px solid transparent;
+}
+
+.btn-download:hover {
+  background: linear-gradient(135deg, #1d4ed8, #6d28d9);
+  transform: translateY(-1px);
+}
+
+.download-section {
+  margin-bottom: 1.5em;
+}
+
 .error-message {
   display: flex;
   align-items: center;
@@ -1618,6 +1871,39 @@ body {
   word-break: break-all;
 }
 
+/* Model Version List */
+.model-list {
+  margin-top: 1em;
+}
+.model-list h3 {
+  font-size: 1em;
+  color: #a1a1aa;
+  margin-bottom: 0.5em;
+}
+.model-list ul {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+.model-list li {
+  display: flex;
+  align-items: center;
+  gap: 1em;
+  margin-bottom: 0.5em;
+}
+.model-version {
+  font-family: monospace;
+  color: #8b5cf6;
+  font-size: 1em;
+}
+.btn-small {
+  font-size: 0.95em;
+  padding: 0.45em 0.8em;
+  margin-left: 0.5em;
+  background: #111827;
+  border: 1px solid #27272a;
+}
+
 /* Animations */
 @keyframes spin {
   from {
@@ -1630,6 +1916,138 @@ body {
 
 .mdi-spin {
   animation: spin 1s linear infinite;
+}
+
+.model-card {
+  background: #0f0f15;
+  border: 1px solid #27272a;
+  border-radius: 14px;
+  padding: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.25);
+}
+
+.model-card-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.model-card-header h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  color: #fafafa;
+}
+
+.model-card-header .muted {
+  color: #71717a;
+  font-size: 0.875rem;
+}
+
+.pill {
+  padding: 0.35rem 0.75rem;
+  background: rgba(99, 102, 241, 0.15);
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  border-radius: 999px;
+  color: #c4c6ff;
+  font-weight: 600;
+  font-size: 0.875rem;
+}
+
+.model-controls {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 1rem;
+  align-items: end;
+}
+
+.model-field {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+  font-size: 0.9rem;
+  color: #a1a1aa;
+}
+
+.model-field select {
+  background: #111827;
+  color: #fff;
+  border: 1px solid #27272a;
+  border-radius: 10px;
+  padding: 0.65rem 0.75rem;
+  font-size: 0.95rem;
+}
+
+.model-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.btn-download.wide {
+  flex: 1;
+  justify-content: center;
+}
+
+.btn-download.disabled {
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+.btn-primary.ghost {
+  background: transparent;
+  border: 1px solid #3b82f6;
+  color: #c7d2fe;
+  padding: 0.75rem 1.5rem;
+}
+
+.model-action-message {
+  color: #c7d2fe;
+  font-size: 0.9rem;
+}
+
+.model-version-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.75rem 0;
+  border-bottom: 1px solid #1f1f2b;
+}
+
+.model-links {
+  display: flex;
+  gap: 0.5rem;
+  flex-wrap: wrap;
+}
+
+.model-created {
+  color: #565f7a;
+  font-size: 0.85rem;
+  margin-left: 0.4rem;
+}
+
+.info-note {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.85rem 1rem;
+  background: rgba(34, 197, 94, 0.08);
+  border: 1px solid rgba(34, 197, 94, 0.35);
+  border-radius: 12px;
+  color: #86efac;
+  font-size: 0.95rem;
+  margin-top: 0.5rem;
+}
+
+.info-note code {
+  background: rgba(255, 255, 255, 0.06);
+  padding: 0.15rem 0.4rem;
+  border-radius: 6px;
+  color: #e4e4e7;
 }
 
 /* Scrollbar */

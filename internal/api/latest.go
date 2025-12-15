@@ -1,8 +1,11 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
+	"os"
 	"path/filepath"
+	"sort"
 	"time"
 
 	"github.com/SkyClf/SkyClf/internal/infer"
@@ -12,13 +15,15 @@ import (
 type LatestHandler struct {
 	st        *store.Store
 	imagesDir string
+	modelsDir string
 	pred      infer.Predictor
 }
 
-func NewLatestHandler(st *store.Store, imagesDir string, pred infer.Predictor) *LatestHandler {
+func NewLatestHandler(st *store.Store, imagesDir string, modelsDir string, pred infer.Predictor) *LatestHandler {
 	return &LatestHandler{
 		st:        st,
 		imagesDir: imagesDir,
+		modelsDir: modelsDir,
 		pred:      pred,
 	}
 }
@@ -26,6 +31,89 @@ func NewLatestHandler(st *store.Store, imagesDir string, pred infer.Predictor) *
 func (h *LatestHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/latest", h.handleLatest)
 	mux.HandleFunc("GET /api/clf", h.handleClf)
+	mux.HandleFunc("GET /api/models/download", h.handleDownloadModel)
+	mux.HandleFunc("GET /api/models/list", h.handleListModels)
+}
+// handleDownloadModel serves a model file for download, optionally by version
+func (h *LatestHandler) handleDownloadModel(w http.ResponseWriter, r *http.Request) {
+	version := r.URL.Query().Get("version")
+	file := r.URL.Query().Get("file") // model.onnx or model.pt
+	modelDir := filepath.Join(h.modelsDir, "skystate")
+	var modelPath string
+	
+	// ensure deterministic ordering
+	entries, err := os.ReadDir(modelDir)
+	if err == nil && version == "" {
+		var vers []string
+		for _, e := range entries {
+			if e.IsDir() && len(e.Name()) > 0 && e.Name()[0] == 'v' {
+				vers = append(vers, e.Name())
+			}
+		}
+		if len(vers) > 0 {
+			sort.Strings(vers)
+			version = vers[len(vers)-1]
+		}
+	}
+
+	// Download specific version
+	if version != "" {
+		targetDir := filepath.Join(modelDir, version)
+		candidates := []string{"model.onnx", "model.pt"}
+		if file != "" {
+			candidates = []string{file}
+		}
+		for _, fname := range candidates {
+			tryPath := filepath.Join(targetDir, fname)
+			if _, err := os.Stat(tryPath); err == nil {
+				modelPath = tryPath
+				break
+			}
+		}
+	}
+	if modelPath == "" {
+		http.Error(w, "No model found", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/octet-stream")
+	w.Header().Set("Content-Disposition", "attachment; filename=\""+filepath.Base(modelPath)+"\"")
+	http.ServeFile(w, r, modelPath)
+}
+
+// handleListModels lists all available model versions
+func (h *LatestHandler) handleListModels(w http.ResponseWriter, r *http.Request) {
+	modelDir := filepath.Join(h.modelsDir, "skystate")
+	entries, err := os.ReadDir(modelDir)
+	if err != nil {
+		http.Error(w, "No models found", http.StatusNotFound)
+		return
+	}
+	var models []map[string]any
+	for _, e := range entries {
+		if e.IsDir() && len(e.Name()) > 0 && e.Name()[0] == 'v' {
+			version := e.Name()
+			m := map[string]any{"version": version}
+			// Optional metadata
+			if meta, err := os.ReadFile(filepath.Join(modelDir, version, "meta.json")); err == nil {
+				var metaMap map[string]any
+				if json.Unmarshal(meta, &metaMap) == nil {
+					if created, ok := metaMap["created_at"]; ok {
+						m["created_at"] = created
+					}
+				}
+			}
+			for _, fname := range []string{"model.onnx", "model.pt"} {
+				tryPath := filepath.Join(modelDir, version, fname)
+				if _, err := os.Stat(tryPath); err == nil {
+					m[fname] = "/api/models/download?version=" + version + "&file=" + fname
+				}
+			}
+			models = append(models, m)
+		}
+	}
+	sort.Slice(models, func(i, j int) bool { return models[i]["version"].(string) > models[j]["version"].(string) })
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(models)
 }
 
 func (h *LatestHandler) handleLatest(w http.ResponseWriter, r *http.Request) {

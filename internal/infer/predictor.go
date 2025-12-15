@@ -13,6 +13,6 @@ type Prediction struct {
 
 type Predictor interface {
 	PredictImage(ctx context.Context, imagePath string) (*Prediction, error)
-	Reload(modelsDir string) error
+	Reload(modelsDir string, version string) error
 	Close() error
 }

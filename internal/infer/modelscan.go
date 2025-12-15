@@ -18,7 +18,9 @@ type ModelInfo struct {
 	ClassNames []string // index->name
 }
 
-func FindLatestSkyStateModel(modelsDir string) (*ModelInfo, error) {
+// FindSkyStateModel returns the specified version (e.g. "v3") of the skystate model.
+// If version is empty, the latest version is returned.
+func FindSkyStateModel(modelsDir, version string) (*ModelInfo, error) {
 	root := filepath.Join(modelsDir, "skystate")
 	ents, err := os.ReadDir(root)
 	if err != nil {
@@ -37,10 +39,25 @@ func FindLatestSkyStateModel(modelsDir string) (*ModelInfo, error) {
 	if len(vers) == 0 {
 		return nil, nil
 	}
-	sort.Strings(vers)
-	v := vers[len(vers)-1]
 
-	dir := filepath.Join(root, v)
+	// pick latest if no explicit version requested
+	if version == "" {
+		sort.Strings(vers)
+		version = vers[len(vers)-1]
+	} else {
+		found := false
+		for _, v := range vers {
+			if v == version {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return nil, nil
+		}
+	}
+
+	dir := filepath.Join(root, version)
 	onnxPath := filepath.Join(dir, "model.onnx")
 	classesPath := filepath.Join(dir, "classes.json")
 
@@ -79,10 +96,21 @@ func FindLatestSkyStateModel(modelsDir string) (*ModelInfo, error) {
 	}
 
 	return &ModelInfo{
-		Version:    v,
+		Version:    version,
 		Dir:        dir,
 		OnnxPath:   onnxPath,
 		Classes:    classes,
 		ClassNames: names,
 	}, nil
+}
+
+func FindLatestSkyStateModel(modelsDir string) (*ModelInfo, error) {
+	mi, err := FindSkyStateModel(modelsDir, "")
+	if err != nil {
+		return nil, err
+	}
+	if mi == nil {
+		return nil, nil
+	}
+	return mi, nil
 }
