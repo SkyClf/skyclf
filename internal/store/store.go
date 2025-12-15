@@ -75,6 +75,7 @@ type DatasetStats struct {
 	Total     int `json:"total"`
 	Labeled   int `json:"labeled"`
 	Unlabeled int `json:"unlabeled"`
+	ByClass   map[string]int `json:"by_class"`
 }
 
 func (s *Store) UpsertImage(id, path, sha256 string, fetchedAt time.Time) error {
@@ -127,12 +128,38 @@ func (s *Store) CountLabeled() (int, error) {
 func (s *Store) CountStats() (DatasetStats, error) {
 	var stats DatasetStats
 
+	stats.ByClass = map[string]int{
+		"clear":         0,
+		"light_clouds":  0,
+		"heavy_clouds":  0,
+		"precipitation": 0,
+		"unknown":       0,
+	}
+
 	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM images`).Scan(&stats.Total); err != nil {
 		return stats, fmt.Errorf("count images: %w", err)
 	}
 	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM labels`).Scan(&stats.Labeled); err != nil {
 		return stats, fmt.Errorf("count labels: %w", err)
 	}
+
+	rows, err := s.DB.Query(`SELECT skystate, COUNT(*) FROM labels GROUP BY skystate`)
+	if err != nil {
+		return stats, fmt.Errorf("count by class: %w", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var name string
+		var n int
+		if err := rows.Scan(&name, &n); err != nil {
+			return stats, fmt.Errorf("scan class count: %w", err)
+		}
+		stats.ByClass[name] = n
+	}
+	if err := rows.Err(); err != nil {
+		return stats, fmt.Errorf("rows: %w", err)
+	}
+
 	if err := s.DB.QueryRow(`
 SELECT COUNT(*)
 FROM images i

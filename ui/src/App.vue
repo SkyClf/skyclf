@@ -45,6 +45,7 @@ const showUnlabeledOnly = ref(true);
 const labeledCount = ref(0);
 const totalCount = ref(0);
 const unlabeledCount = ref(0);
+const labeledByClass = ref<Record<string, number>>({});
 const labeling = ref(false);
 
 // Training state
@@ -75,6 +76,13 @@ const progress = computed(() => {
   if (total === 0) return 100;
   return Math.round((labeled / total) * 100);
 });
+
+const classBreakdown = computed(() =>
+  skystateOptions.map((opt) => ({
+    ...opt,
+    count: labeledByClass.value[opt.value] || 0,
+  }))
+);
 
 const skystateOptions = [
   {
@@ -139,6 +147,7 @@ async function fetchStats() {
       labeledCount.value = data.labeled ?? 0;
       totalCount.value = data.total ?? 0;
       unlabeledCount.value = data.unlabeled ?? 0;
+      labeledByClass.value = data.by_class ?? {};
     } else {
       // Fallback to old behavior if stats route is unavailable
       const alt = await fetch("/api/dataset/images?limit=10000");
@@ -147,6 +156,7 @@ async function fetchStats() {
         const items = data.items || [];
         labeledCount.value = items.filter((i: ImageItem) => i.skystate).length;
         unlabeledCount.value = Math.max((data.count || 0) - labeledCount.value, 0);
+        labeledByClass.value = {};
       }
     }
   } catch (e) {
@@ -212,6 +222,11 @@ function nextImage() {
 
 function prevImage() {
   if (hasPrev.value) currentIndex.value--;
+}
+
+function setCurrentIndex(idx: number) {
+  if (idx < 0 || idx >= images.value.length) return;
+  currentIndex.value = idx;
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -478,6 +493,25 @@ onUnmounted(() => {
             <span class="stat-label">Model</span>
           </div>
         </div>
+
+        <div class="class-breakdown">
+          <div class="class-breakdown-header">
+            <span>By class</span>
+            <span class="muted">{{ labeledCount }} labeled</span>
+          </div>
+          <div class="class-chip-list">
+            <span
+              v-for="cls in classBreakdown"
+              :key="cls.value"
+              class="class-chip"
+              :style="{ '--class-color': cls.color }"
+            >
+              <span class="chip-dot"></span>
+              <span class="chip-label">{{ cls.label }}</span>
+              <span class="chip-count">{{ cls.count }}</span>
+            </span>
+          </div>
+        </div>
       </div>
 
       <div class="progress-section">
@@ -596,6 +630,34 @@ onUnmounted(() => {
               >
                 <span class="mdi mdi-arrow-right"></span>
               </button>
+            </div>
+
+            <div class="image-timeline">
+              <div class="timeline-header">
+                <span class="mdi mdi-filmstrip-box-multiple"></span>
+                <span>Timeline</span>
+                <span class="timeline-count">{{ images.length }} images</span>
+              </div>
+              <div class="timeline-track">
+                <button
+                  v-for="(img, idx) in images"
+                  :key="img.id"
+                  class="timeline-thumb"
+                  :class="{ active: idx === currentIndex }"
+                  @click="setCurrentIndex(idx)"
+                  :title="`Jump to ${img.id}`"
+                >
+                  <img :src="`/images/${img.id}.jpg`" :alt="img.id" />
+                  <span class="thumb-label">
+                    {{
+                      new Date(img.fetched_at).toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })
+                    }}
+                  </span>
+                </button>
+              </div>
             </div>
           </div>
 
@@ -765,9 +827,16 @@ onUnmounted(() => {
                 }}</span>
                 <span class="scratch-hint">{{
                   fromScratch
-                    ? "Start with a fresh model"
-                    : "Build upon previous model"
+                    ? "Reset weights and start a brand-new model"
+                    : "Fine-tune the currently active model"
                 }}</span>
+                <span class="scratch-mode-note">
+                  {{
+                    fromScratch
+                      ? "Use when you want to ignore past training."
+                      : "Keeps existing weights and learns from new labels."
+                  }}
+                </span>
               </div>
             </label>
           </div>
@@ -781,7 +850,13 @@ onUnmounted(() => {
               class="btn-primary"
             >
               <span class="mdi mdi-play"></span>
-              {{ loading ? "Starting..." : "Start Training" }}
+              {{
+                loading
+                  ? "Starting..."
+                  : fromScratch
+                  ? "Start (from scratch)"
+                  : "Start (continue learning)"
+              }}
             </button>
             <button
               v-else
@@ -1005,7 +1080,7 @@ body,
 #app {
   height: 100%;
   width: 100%;
-  overflow: hidden;
+  overflow: auto;
 }
 
 body {
@@ -1137,6 +1212,60 @@ body {
   color: #71717a;
 }
 
+.muted {
+  color: #71717a;
+  font-size: 0.8125rem;
+}
+
+.class-breakdown {
+  padding: 0.75rem;
+  background: #18181b;
+  border-radius: 12px;
+  border: 1px solid #27272a;
+}
+
+.class-breakdown-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.875rem;
+  color: #e4e4e7;
+  margin-bottom: 0.5rem;
+}
+
+.class-chip-list {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.class-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  padding: 0.35rem 0.5rem;
+  border-radius: 10px;
+  background: #111118;
+  border: 1px solid #27272a;
+  color: #e4e4e7;
+}
+
+.chip-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--class-color, #8b5cf6);
+}
+
+.chip-label {
+  font-size: 0.8125rem;
+}
+
+.chip-count {
+  font-weight: 600;
+  color: #fafafa;
+}
+
 .progress-section {
   margin-top: auto;
   padding: 1rem;
@@ -1171,7 +1300,7 @@ body {
   flex: 1;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .toolbar {
@@ -1265,7 +1394,7 @@ body {
   flex: 1;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .empty-state {
@@ -1424,6 +1553,74 @@ body {
   text-align: center;
 }
 
+.image-timeline {
+  margin-top: 0.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  background: #111118;
+  border: 1px solid #27272a;
+  border-radius: 12px;
+  padding: 0.75rem;
+}
+
+.timeline-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  color: #a1a1aa;
+}
+
+.timeline-count {
+  margin-left: auto;
+  font-size: 0.75rem;
+  color: #52525b;
+}
+
+.timeline-track {
+  display: flex;
+  gap: 0.5rem;
+  overflow-x: auto;
+  padding-bottom: 0.25rem;
+}
+
+.timeline-thumb {
+  display: flex;
+  flex-direction: column;
+  gap: 0.35rem;
+  min-width: 90px;
+  border: 1px solid #27272a;
+  background: #0a0a0f;
+  border-radius: 10px;
+  padding: 0.4rem;
+  cursor: pointer;
+  transition: all 0.2s;
+}
+
+.timeline-thumb img {
+  width: 100%;
+  height: 52px;
+  object-fit: cover;
+  border-radius: 6px;
+  background: #000;
+}
+
+.timeline-thumb .thumb-label {
+  font-size: 0.75rem;
+  color: #a1a1aa;
+  text-align: center;
+}
+
+.timeline-thumb.active {
+  border-color: #8b5cf6;
+  box-shadow: 0 0 0 1px rgba(139, 92, 246, 0.4);
+}
+
+.timeline-thumb:hover {
+  border-color: #3b82f6;
+}
+
 /* Controls Panel */
 .controls-panel {
   background: #111118;
@@ -1569,7 +1766,7 @@ body {
   flex: 1;
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .train-content {
@@ -1747,6 +1944,11 @@ body {
 .scratch-hint {
   font-size: 0.8125rem;
   color: #71717a;
+}
+
+.scratch-mode-note {
+  font-size: 0.75rem;
+  color: #52525b;
 }
 
 .actions {
