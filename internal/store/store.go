@@ -71,6 +71,12 @@ type Image struct {
 	FetchedAt time.Time
 }
 
+type DatasetStats struct {
+	Total     int `json:"total"`
+	Labeled   int `json:"labeled"`
+	Unlabeled int `json:"unlabeled"`
+}
+
 func (s *Store) UpsertImage(id, path, sha256 string, fetchedAt time.Time) error {
 	_, err := s.DB.Exec(
 		`INSERT INTO images(id, path, sha256, fetched_at)
@@ -115,6 +121,27 @@ func (s *Store) CountLabeled() (int, error) {
 		return 0, fmt.Errorf("count labels: %w", err)
 	}
 	return n, nil
+}
+
+// CountStats returns basic dataset counters.
+func (s *Store) CountStats() (DatasetStats, error) {
+	var stats DatasetStats
+
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM images`).Scan(&stats.Total); err != nil {
+		return stats, fmt.Errorf("count images: %w", err)
+	}
+	if err := s.DB.QueryRow(`SELECT COUNT(*) FROM labels`).Scan(&stats.Labeled); err != nil {
+		return stats, fmt.Errorf("count labels: %w", err)
+	}
+	if err := s.DB.QueryRow(`
+SELECT COUNT(*)
+FROM images i
+LEFT JOIN labels l ON l.image_id = i.id
+WHERE l.image_id IS NULL`).Scan(&stats.Unlabeled); err != nil {
+		return stats, fmt.Errorf("count unlabeled: %w", err)
+	}
+
+	return stats, nil
 }
 
 type ImageWithLabel struct {

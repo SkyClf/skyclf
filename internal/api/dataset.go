@@ -22,6 +22,7 @@ func (h *DatasetHandler) RegisterRoutes(mux *http.ServeMux) {
 	// NOTE: This conflicts with ImagesHandler which also registers GET /api/images
 	// You should either disable ImagesHandler.listImages or change this route.
 	mux.HandleFunc("GET /api/dataset/images", h.handleListImages)
+	mux.HandleFunc("GET /api/dataset/stats", h.handleStats)
 	mux.HandleFunc("POST /api/labels", h.handleSetLabel)
 }
 
@@ -48,6 +49,15 @@ func (h *DatasetHandler) handleListImages(w http.ResponseWriter, r *http.Request
 	}
 
 	writeJSON(w, http.StatusOK, resp)
+}
+
+func (h *DatasetHandler) handleStats(w http.ResponseWriter, r *http.Request) {
+	stats, err := h.st.CountStats()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, stats)
 }
 
 type setLabelRequest struct {

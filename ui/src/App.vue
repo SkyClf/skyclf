@@ -44,6 +44,7 @@ const currentIndex = ref(0);
 const showUnlabeledOnly = ref(true);
 const labeledCount = ref(0);
 const totalCount = ref(0);
+const unlabeledCount = ref(0);
 const labeling = ref(false);
 
 // Training state
@@ -53,11 +54,10 @@ const error = ref("");
 const epochs = ref(10);
 const batchSize = ref(16);
 const learningRate = ref("0.001");
-const fromScratch = ref(false);
+const fromScratch = ref(true);
 const modelInfo = ref<ModelInfo>({ active: null });
 const modelVersions = ref<any[]>([]);
 const selectedModelVersion = ref<string | null>(null);
-const selectedModelFormat = ref<string>("model.onnx");
 const switchingModel = ref(false);
 const modelActionMessage = ref("");
 const lastReloadedRunId = ref<string | null>(null);
@@ -69,10 +69,11 @@ const currentImage = computed(() => images.value[currentIndex.value] || null);
 const hasNext = computed(() => currentIndex.value < images.value.length - 1);
 const hasPrev = computed(() => currentIndex.value > 0);
 const progress = computed(() => {
-  if (images.value.length === 0) return 100;
-  return Math.round(
-    (labeledCount.value / (labeledCount.value + images.value.length)) * 100
-  );
+  const labeled = labeledCount.value;
+  const unlabeled = unlabeledCount.value || images.value.length;
+  const total = labeled + unlabeled;
+  if (total === 0) return 100;
+  return Math.round((labeled / total) * 100);
 });
 
 const skystateOptions = [
@@ -132,11 +133,21 @@ async function fetchImages() {
 
 async function fetchStats() {
   try {
-    const res = await fetch("/api/dataset/images?limit=10000");
+    const res = await fetch("/api/dataset/stats");
     if (res.ok) {
       const data = await res.json();
-      const items = data.items || [];
-      labeledCount.value = items.filter((i: ImageItem) => i.skystate).length;
+      labeledCount.value = data.labeled ?? 0;
+      totalCount.value = data.total ?? 0;
+      unlabeledCount.value = data.unlabeled ?? 0;
+    } else {
+      // Fallback to old behavior if stats route is unavailable
+      const alt = await fetch("/api/dataset/images?limit=10000");
+      if (alt.ok) {
+        const data = await alt.json();
+        const items = data.items || [];
+        labeledCount.value = items.filter((i: ImageItem) => i.skystate).length;
+        unlabeledCount.value = Math.max((data.count || 0) - labeledCount.value, 0);
+      }
     }
   } catch (e) {
     console.error("Failed to fetch stats:", e);
@@ -333,24 +344,17 @@ function syncSelectedModel() {
     }
   }
   selectedModelVersion.value = target;
-  const formats = pickFormatsForVersion(target);
-  if (!formats.includes(selectedModelFormat.value) && formats.length) {
-    selectedModelFormat.value = formats[0] || selectedModelFormat.value;
-  }
 }
 
-const downloadHref = computed(() => {
-  const v = selectedModelVersion.value;
-  if (!v) return "/api/models/download";
-  const formats = pickFormatsForVersion(v);
-  const chosen = formats.includes(selectedModelFormat.value)
-    ? selectedModelFormat.value
-    : formats[0];
-  if (!chosen) return `/api/models/download?version=${encodeURIComponent(v)}`;
-  return `/api/models/download?version=${encodeURIComponent(
-    v
-  )}&file=${encodeURIComponent(chosen)}`;
+const selectedVersion = computed(() => {
+  if (!selectedModelVersion.value) return null;
+  return (
+    modelVersions.value.find((m) => m.version === selectedModelVersion.value) ||
+    null
+  );
 });
+
+const selectedFormats = computed(() => pickFormatsForVersion(selectedModelVersion.value));
 
 async function useSelectedModel() {
   if (!selectedModelVersion.value) return;
@@ -454,7 +458,9 @@ onUnmounted(() => {
         <div class="stat-item">
           <span class="mdi mdi-image-multiple"></span>
           <div class="stat-content">
-            <span class="stat-value">{{ images.length }}</span>
+            <span class="stat-value">{{
+              unlabeledCount || images.length
+            }}</span>
             <span class="stat-label">Unlabeled</span>
           </div>
         </div>
@@ -788,14 +794,49 @@ onUnmounted(() => {
             </button>
           </div>
 
-          <!-- Download Model Button -->
+          <div class="manual-card">
+            <h3>Quick training manual</h3>
+            <ul class="manual-list">
+              <li>
+                <strong>Start from scratch</strong> once you have ~50 balanced
+                labels per class (include some "unknown"). Turn off "Continue
+                learning" to reset weights.
+              </li>
+              <li>
+                <strong>Iterate</strong>: label a small, balanced batch, then
+                fine-tune (continue learning). Repeat weekly and spot-check
+                predictions.
+              </li>
+              <li>
+                <strong>Validation split</strong> stays at 0.2 and seed 42 for
+                repeatable metrics. Keep batch size modest if GPU is small.
+              </li>
+              <li>
+                <strong>Audit misses</strong>: after each train, reload the
+                model, review wrong/confident predictions, and relabel those
+                images.
+              </li>
+              <li>
+                <strong>Periodically reset</strong>: run another "Train from
+                scratch" after several fine-tunes to avoid drift.
+              </li>
+            </ul>
+          </div>
+
+          <!-- Models & API -->
           <div class="download-section">
             <div class="model-card">
               <div class="model-card-header">
                 <div>
-                  <h3>Models</h3>
+                  <h3>Models & API</h3>
                   <p class="muted">
-                    Download or activate a specific version for inference
+                    Switch or download a version. <a
+                      href="/api/clf"
+                      class="api-link"
+                      target="_blank"
+                      >/api/clf</a
+                    >
+                    returns the latest prediction JSON.
                   </p>
                 </div>
                 <span class="pill">
@@ -822,33 +863,20 @@ onUnmounted(() => {
                     </option>
                   </select>
                 </label>
-                <label class="model-field">
-                  <span>Format</span>
-                  <select
-                    v-model="selectedModelFormat"
-                    :disabled="
-                      !selectedModelVersion ||
-                      !pickFormatsForVersion(selectedModelVersion).length
-                    "
-                  >
-                    <option
-                      v-for="fmt in pickFormatsForVersion(selectedModelVersion)"
-                      :key="fmt"
-                      :value="fmt"
-                    >
-                      {{ fmt === "model.onnx" ? "ONNX" : "PyTorch (.pt)" }}
-                    </option>
-                  </select>
-                </label>
-                <div class="model-actions">
+                <div class="model-actions wrap">
                   <a
-                    :href="downloadHref"
-                    class="btn-download wide"
+                    v-for="fmt in selectedFormats"
+                    :key="fmt"
+                    class="btn-download"
+                    :href="
+                      selectedVersion && selectedVersion[fmt]
+                        ? selectedVersion[fmt]
+                        : `/api/models/download?version=${selectedModelVersion}&file=${fmt}`
+                    "
                     download
-                    :class="{ disabled: !selectedModelVersion }"
                   >
                     <span class="mdi mdi-download"></span>
-                    Download
+                    Download {{ fmt === 'model.onnx' ? 'ONNX' : 'PyTorch' }}
                   </a>
                   <button
                     class="btn-primary ghost"
@@ -872,7 +900,7 @@ onUnmounted(() => {
                       <div>
                         <span class="model-version">{{ m.version }}</span>
                         <span v-if="m.created_at" class="model-created"
-                          >· {{ new Date(m.created_at).toLocaleString() }}</span
+                          >{{ new Date(m.created_at).toLocaleString() }}</span
                         >
                       </div>
                       <div class="model-links">
@@ -892,6 +920,19 @@ onUnmounted(() => {
                         >
                           <span class="mdi mdi-download"></span>PyTorch
                         </a>
+                        <span v-if="modelInfo.active === m.version" class="pill"
+                          >Active</span
+                        >
+                        <button
+                          v-else
+                          class="btn-primary ghost btn-small"
+                          @click="
+                            selectedModelVersion = m.version;
+                            useSelectedModel();
+                          "
+                        >
+                          Use
+                        </button>
                       </div>
                     </div>
                   </li>
@@ -899,7 +940,6 @@ onUnmounted(() => {
               </div>
             </div>
           </div>
-
           <div class="info-note">
             <span class="mdi mdi-database"></span>
             Labeled images stay in <code>/data/images</code> and labels in
@@ -2007,6 +2047,39 @@ body {
 .model-action-message {
   color: #c7d2fe;
   font-size: 0.9rem;
+}
+
+.manual-card {
+  margin: 1.5rem 0;
+  padding: 1rem 1.25rem;
+  background: #0f0f15;
+  border: 1px solid #27272a;
+  border-radius: 12px;
+  color: #cdd5ff;
+  line-height: 1.6;
+}
+
+.manual-card h3 {
+  margin-bottom: 0.75rem;
+  font-size: 1rem;
+  color: #fafafa;
+}
+
+.manual-list {
+  list-style: disc;
+  padding-left: 1.25rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.45rem;
+}
+
+.manual-list strong {
+  color: #c7d2fe;
+}
+
+.api-link {
+  color: #7c3aed;
+  text-decoration: underline;
 }
 
 .model-version-row {
