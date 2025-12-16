@@ -20,7 +20,7 @@ type TrainConfig struct {
 	LR          string `json:"lr"` // e.g. "0.001"
 	ImageSize   int    `json:"img_size"`
 	Seed        int    `json:"seed"`
-	ValSplit    string `json:"val_split"` // e.g. "0.2"
+	ValSplit    string `json:"val_split"`    // e.g. "0.2"
 	FromScratch bool   `json:"from_scratch"` // Train from scratch instead of resuming
 }
 
@@ -38,13 +38,13 @@ func DefaultTrainConfig() TrainConfig {
 
 // TrainStatus represents the current state of a training job
 type TrainStatus struct {
-	Running      bool         `json:"running"`
-	ContainerID  string       `json:"container_id,omitempty"`
-	StartedAt    time.Time    `json:"started_at,omitempty"`
-	ExitCode     int          `json:"exit_code,omitempty"`
-	Error        string       `json:"error,omitempty"`
-	Logs         string       `json:"logs,omitempty"`
-	LastConfig   *TrainConfig `json:"last_config,omitempty"`
+	Running     bool         `json:"running"`
+	ContainerID string       `json:"container_id,omitempty"`
+	StartedAt   time.Time    `json:"started_at,omitempty"`
+	ExitCode    int          `json:"exit_code,omitempty"`
+	Error       string       `json:"error,omitempty"`
+	Logs        string       `json:"logs,omitempty"`
+	LastConfig  *TrainConfig `json:"last_config,omitempty"`
 }
 
 // Trainer manages the SkyClf-Trainer Docker container
@@ -60,7 +60,11 @@ type Trainer struct {
 
 	// Config - container name from compose stack
 	containerName string // e.g. "skyclf-trainer"
-	
+
+	// Base container config we clone for training/idle containers
+	baseConfig     *container.Config
+	baseHostConfig *container.HostConfig
+
 	// Callback when training completes successfully
 	OnComplete func()
 }
@@ -89,14 +93,16 @@ func (t *Trainer) Close() error {
 
 // Status returns the current training status
 func (t *Trainer) Status(ctx context.Context) TrainStatus {
+	// Check actual container state first (may block a bit)
+	containerID, containerRunning := t.getContainerState(ctx)
+
 	t.mu.RLock()
 	defer t.mu.RUnlock()
 
-	// Check actual container state
-	containerID, isRunning := t.getContainerState(ctx)
+	trainingRunning := t.running && containerRunning
 
 	status := TrainStatus{
-		Running:     isRunning,
+		Running:     trainingRunning,
 		ContainerID: containerID,
 		StartedAt:   t.startedAt,
 		ExitCode:    t.lastExitCode,
@@ -106,7 +112,7 @@ func (t *Trainer) Status(ctx context.Context) TrainStatus {
 	}
 
 	// If running, get current logs
-	if isRunning && containerID != "" {
+	if trainingRunning && containerID != "" {
 		logs, err := t.getLogs(ctx, containerID, 100)
 		if err == nil {
 			status.Logs = logs
@@ -143,6 +149,12 @@ func (t *Trainer) Start(ctx context.Context, cfg TrainConfig) error {
 		return fmt.Errorf("trainer container not found (is docker-compose up?): %w", err)
 	}
 
+	// Keep a copy of the base config/host config so we can recreate an idle container later
+	cfgCopy := *existingInfo.Config
+	hostCopy := *existingInfo.HostConfig
+	t.baseConfig = &cfgCopy
+	t.baseHostConfig = &hostCopy
+
 	// Build new command with training params
 	cmd := []string{
 		"python", "-m", "trainer.train",
@@ -163,10 +175,10 @@ func (t *Trainer) Start(ctx context.Context, cfg TrainConfig) error {
 	}
 
 	// Recreate with new command but same config (volumes, env, etc.)
-	newConfig := existingInfo.Config
+	newConfig := cfgCopy
 	newConfig.Cmd = cmd
 
-	resp, err := t.cli.ContainerCreate(ctx, newConfig, existingInfo.HostConfig, nil, nil, t.containerName)
+	resp, err := t.cli.ContainerCreate(ctx, &newConfig, &hostCopy, nil, nil, t.containerName)
 	if err != nil {
 		return fmt.Errorf("recreate container: %w", err)
 	}
@@ -247,6 +259,9 @@ func (t *Trainer) monitor(containerID string) {
 			log.Printf("trainer: exited with code %d", result.StatusCode)
 		}
 	}
+
+	// After a run finishes, recreate the idle container so the stack stays healthy but training is not running
+	t.restoreIdleContainer(ctx)
 }
 
 // getLogs retrieves the last N lines of container logs
@@ -288,4 +303,38 @@ func stripDockerLogHeaders(data []byte) string {
 		data = data[size:]
 	}
 	return strings.Join(lines, "")
+}
+
+// restoreIdleContainer recreates the trainer container with its original (idle) command
+// so redeploys and health checks see it running, but no training is executed.
+func (t *Trainer) restoreIdleContainer(ctx context.Context) {
+	t.mu.RLock()
+	baseCfg := t.baseConfig
+	baseHostCfg := t.baseHostConfig
+	t.mu.RUnlock()
+
+	if baseCfg == nil || baseHostCfg == nil {
+		return
+	}
+
+	// Remove any stopped training container (ignore errors)
+	if err := t.cli.ContainerRemove(ctx, t.containerName, container.RemoveOptions{Force: true}); err != nil {
+		log.Printf("trainer: warning removing training container: %v", err)
+	}
+
+	cfgCopy := *baseCfg
+	hostCopy := *baseHostCfg
+
+	resp, err := t.cli.ContainerCreate(ctx, &cfgCopy, &hostCopy, nil, nil, t.containerName)
+	if err != nil {
+		log.Printf("trainer: recreate idle container: %v", err)
+		return
+	}
+
+	if err := t.cli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+		log.Printf("trainer: start idle container: %v", err)
+		return
+	}
+
+	log.Printf("trainer: idle container ready")
 }

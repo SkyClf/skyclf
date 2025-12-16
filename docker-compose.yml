@@ -37,5 +37,4 @@ services:
       - ./data:/data
     environment:
       - SKYCLF_DATA_DIR=/data
-    command:
-      ["echo", "Trainer container created. Will be started by SkyClf backend."]
+    command: ["sleep", "infinity"]

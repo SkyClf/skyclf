@@ -133,6 +133,10 @@ async function fetchImages() {
       const data = await res.json();
       images.value = data.items || [];
       totalCount.value = data.count || 0;
+      // Keep index valid so the main image and timeline don't disappear after refreshes
+      if (currentIndex.value >= images.value.length) {
+        currentIndex.value = images.value.length > 0 ? images.value.length - 1 : 0;
+      }
     }
   } catch (e) {
     console.error("Failed to fetch images:", e);
@@ -1427,14 +1431,17 @@ body {
   flex: 1;
   display: grid;
   grid-template-columns: 1fr 320px;
-  overflow: hidden;
+  overflow: auto;
 }
 
 .image-panel {
   display: flex;
   flex-direction: column;
+  gap: 0.75rem;
   padding: 1.5rem;
   background: #0a0a0f;
+  overflow-y: auto;
+  min-height: 0;
 }
 
 .image-wrapper {
