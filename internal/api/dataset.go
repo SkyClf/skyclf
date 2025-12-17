@@ -24,6 +24,7 @@ func (h *DatasetHandler) RegisterRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /api/dataset/images", h.handleListImages)
 	mux.HandleFunc("GET /api/dataset/stats", h.handleStats)
 	mux.HandleFunc("POST /api/labels", h.handleSetLabel)
+	mux.HandleFunc("POST /api/labels/reset", h.handleClearLabels)
 }
 
 func (h *DatasetHandler) handleListImages(w http.ResponseWriter, r *http.Request) {
@@ -61,9 +62,9 @@ func (h *DatasetHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 }
 
 type setLabelRequest struct {
-	ImageID string `json:"image_id"`
+	ImageID  string `json:"image_id"`
 	Skystate string `json:"skystate"`
-	Meteor  bool   `json:"meteor"`
+	Meteor   bool   `json:"meteor"`
 }
 
 func (h *DatasetHandler) handleSetLabel(w http.ResponseWriter, r *http.Request) {
@@ -98,4 +99,17 @@ func (h *DatasetHandler) handleSetLabel(w http.ResponseWriter, r *http.Request) 
 	}
 
 	writeJSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h *DatasetHandler) handleClearLabels(w http.ResponseWriter, r *http.Request) {
+	confirm := r.URL.Query().Get("confirm")
+	if confirm != "yes" {
+		http.Error(w, "confirmation required; pass ?confirm=yes", http.StatusBadRequest)
+		return
+	}
+	if err := h.st.ClearLabels(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"ok": true, "message": "all labels removed"})
 }

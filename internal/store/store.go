@@ -65,16 +65,16 @@ CREATE INDEX IF NOT EXISTS idx_images_fetched_at ON images(fetched_at);
 }
 
 type Image struct {
-	ID       string
-	Path     string
-	SHA256   string
+	ID        string
+	Path      string
+	SHA256    string
 	FetchedAt time.Time
 }
 
 type DatasetStats struct {
-	Total     int `json:"total"`
-	Labeled   int `json:"labeled"`
-	Unlabeled int `json:"unlabeled"`
+	Total     int            `json:"total"`
+	Labeled   int            `json:"labeled"`
+	Unlabeled int            `json:"unlabeled"`
 	ByClass   map[string]int `json:"by_class"`
 }
 
@@ -100,6 +100,15 @@ func (s *Store) SetLabel(imageID, skystate string, meteor bool, labeledAt time.T
 		imageID, skystate, m, labeledAt.UTC().Format(time.RFC3339),
 	)
 	return err
+}
+
+// ClearLabels deletes all labels; images remain untouched.
+func (s *Store) ClearLabels() error {
+	_, err := s.DB.Exec(`DELETE FROM labels`)
+	if err != nil {
+		return fmt.Errorf("clear labels: %w", err)
+	}
+	return nil
 }
 
 func (s *Store) GetLabel(imageID string) (skystate string, meteor bool, ok bool, err error) {
@@ -177,7 +186,7 @@ type ImageWithLabel struct {
 	SHA256    string    `json:"sha256"`
 	FetchedAt time.Time `json:"fetched_at"`
 
-	Skystate   *string    `json:"skystate,omitempty"`
+	Skystate  *string    `json:"skystate,omitempty"`
 	Meteor    *bool      `json:"meteor,omitempty"`
 	LabeledAt *time.Time `json:"labeled_at,omitempty"`
 }
@@ -217,7 +226,7 @@ LIMIT ?`
 	for rows.Next() {
 		var (
 			id, path, sha256, fetchedAtStr string
-			skystateNS                      sql.NullString
+			skystateNS                     sql.NullString
 			meteorNI                       sql.NullInt64
 			labeledAtNS                    sql.NullString
 		)

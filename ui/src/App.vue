@@ -47,6 +47,8 @@ const totalCount = ref(0);
 const unlabeledCount = ref(0);
 const labeledByClass = ref<Record<string, number>>({});
 const labeling = ref(false);
+const clearingLabels = ref(false);
+const clearMessage = ref("");
 
 // Training state
 const status = ref<TrainStatus>({ running: false });
@@ -231,6 +233,32 @@ function prevImage() {
 function setCurrentIndex(idx: number) {
   if (idx < 0 || idx >= images.value.length) return;
   currentIndex.value = idx;
+}
+
+async function clearAllLabels() {
+  if (clearingLabels.value) return;
+  const confirmClear = window.confirm(
+    "Remove ALL labels? This cannot be undone. Images stay, labels are cleared."
+  );
+  if (!confirmClear) return;
+
+  clearingLabels.value = true;
+  clearMessage.value = "";
+  try {
+    const res = await fetch("/api/labels/reset?confirm=yes", { method: "POST" });
+    const data = res.ok ? await res.json() : null;
+    if (!res.ok) {
+      clearMessage.value = data?.error || "Failed to remove labels";
+    } else {
+      clearMessage.value = data?.message || "All labels removed";
+      await Promise.all([fetchStats(), fetchImages()]);
+      currentIndex.value = 0;
+    }
+  } catch (e) {
+    clearMessage.value = "Network error";
+  } finally {
+    clearingLabels.value = false;
+  }
 }
 
 function handleKeydown(e: KeyboardEvent) {
@@ -539,6 +567,18 @@ onUnmounted(() => {
             <h1>Label Images</h1>
           </div>
           <div class="toolbar-right">
+            <div class="danger-inline">
+              <button
+                class="btn-danger ghost"
+                @click="clearAllLabels"
+                :disabled="clearingLabels"
+                title="Remove all labels (images remain)"
+              >
+                <span class="mdi mdi-alert"></span>
+                {{ clearingLabels ? "Clearing..." : "Remove all labels" }}
+              </button>
+              <span class="danger-hint">Clears every label; images are kept.</span>
+            </div>
             <label class="toggle">
               <input
                 type="checkbox"
@@ -556,6 +596,8 @@ onUnmounted(() => {
             </button>
           </div>
         </div>
+
+        <p v-if="clearMessage" class="clear-message">{{ clearMessage }}</p>
 
         <!-- Empty State -->
         <div v-if="images.length === 0" class="empty-state">
@@ -877,29 +919,36 @@ onUnmounted(() => {
             <h3>Quick training manual</h3>
             <ul class="manual-list">
               <li>
-                <strong>Start from scratch</strong> once you have ~50 balanced
-                labels per class (include some "unknown"). Turn off "Continue
-                learning" to reset weights.
+                <strong>1) Initial training</strong>: collect ~50 images per
+                class, roughly balanced. Include day and night clear skies.
+                Disable "Continue learning" and run Train from scratch once.
               </li>
               <li>
-                <strong>Iterate</strong>: label a small, balanced batch, then
-                fine-tune (continue learning). Repeat weekly and spot-check
-                predictions.
+                <strong>2) Improve over time</strong>: label a small, balanced
+                batch of new images, enable "Continue learning", then train
+                again (weekly or after enough new data).
               </li>
               <li>
-                <strong>Validation split</strong> stays at 0.2 and seed 42 for
-                repeatable metrics. Keep batch size modest if GPU is small.
+                <strong>3) Validation & performance</strong>: keep validation
+                split = 0.2 and seed = 42 for repeatable results. Use a small
+                batch size if GPU memory is limited.
               </li>
               <li>
-                <strong>Audit misses</strong>: after each train, reload the
-                model, review wrong/confident predictions, and relabel those
-                images.
+                <strong>4) Review mistakes</strong>: after each training, reload
+                the model, check wrong or very confident predictions, and
+                relabel those images. This boosts accuracy more than random new
+                data.
               </li>
               <li>
-                <strong>Periodically reset</strong>: run another "Train from
-                scratch" after several fine-tunes to avoid drift.
+                <strong>5) Periodic reset</strong>: after several fine-tunes or
+                big dataset changes, disable "Continue learning" and run Train
+                from scratch again to prevent drift.
               </li>
             </ul>
+            <p class="muted">
+              Rule of thumb: few new labels → Continue learning. Big changes or
+              seasonal shift → Train from scratch.
+            </p>
           </div>
 
           <!-- Models & API -->
@@ -1997,6 +2046,13 @@ body {
   color: white;
 }
 
+.btn-danger.ghost {
+  background: transparent;
+  border: 1px solid rgba(220, 38, 38, 0.5);
+  color: #fca5a5;
+  padding: 0.6rem 1rem;
+}
+
 .btn-danger:hover:not(:disabled) {
   background: #b91c1c;
 }
@@ -2004,6 +2060,25 @@ body {
 .btn-danger:disabled {
   opacity: 0.5;
   cursor: default;
+}
+
+.danger-inline {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-right: 1rem;
+}
+
+.danger-hint {
+  font-size: 0.75rem;
+  color: #fca5a5;
+}
+
+.clear-message {
+  color: #fca5a5;
+  padding: 0 2rem;
+  margin-top: 0.35rem;
+  font-size: 0.85rem;
 }
 
 .btn-download {
