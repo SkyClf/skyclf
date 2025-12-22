@@ -26,7 +26,7 @@ func main() {
 	}
 	defer st.Close()
 
-	images, err := st.ListImages(*limit, false)
+	images, err := st.ListImages(*limit, false, "")
 	if err != nil {
 		log.Fatalf("list images: %v", err)
 	}

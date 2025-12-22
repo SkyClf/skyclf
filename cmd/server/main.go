@@ -28,7 +28,11 @@ func main() {
 	if err != nil {
 		log.Fatalf("infer init: %v", err)
 	}
-	defer func() { if pred != nil { _ = pred.Close() } }()
+	defer func() {
+		if pred != nil {
+			_ = pred.Close()
+		}
+	}()
 
 	// Open label DB (also stores images metadata)
 	st, err := store.Open(cfg.LabelsDBPath)
@@ -52,7 +56,7 @@ func main() {
 			imageID = imageID[:len(imageID)-4]
 		}
 
-		if err := st.UpsertImage(imageID, ev.Path, ev.SHA256Hex, ev.FetchedAt); err != nil {
+		if err := st.UpsertImage(imageID, ev.Path, ev.SHA256Hex, ev.FetchedAt, int64(ev.SizeBytes)); err != nil {
 			log.Printf("db: upsert image error: %v", err)
 		}
 	})
@@ -84,8 +88,6 @@ func main() {
 		w.Write([]byte("ok\n"))
 	})
 
-	
-
 	// Dataset API (images list + labels)
 	datasetHandler := api.NewDatasetHandler(st)
 	datasetHandler.RegisterRoutes(mux)
@@ -99,7 +101,7 @@ func main() {
 		log.Printf("trainer init warning (training disabled): %v", err)
 	} else {
 		defer tr.Close()
-		
+
 		// Auto-reload model when training completess
 		tr.OnComplete = func() {
 			log.Printf("trainer: reloading models after training completion")
@@ -109,12 +111,12 @@ func main() {
 				}
 			}
 		}
-		
+
 		trainerHandler := api.NewTrainerHandler(tr)
 		trainerHandler.RegisterRoutes(mux)
 		log.Printf("trainer ready: container=%s", cfg.TrainerContainer)
 	}
-	
+
 	// Models API (reload endpoint)
 	mux.HandleFunc("POST /api/models/reload", func(w http.ResponseWriter, r *http.Request) {
 		if pred == nil {
@@ -129,7 +131,7 @@ func main() {
 		w.Header().Set("Content-Type", "application/json")
 		w.Write([]byte(`{"status":"ok","message":"models reloaded"}`))
 	})
-	
+
 	mux.HandleFunc("GET /api/models", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		if pred == nil {

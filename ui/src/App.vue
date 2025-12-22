@@ -25,6 +25,7 @@ interface ImageItem {
   path: string;
   sha256: string;
   fetched_at: string;
+  size_bytes?: number;
   skystate?: string;
   meteor?: boolean;
   labeled_at?: string;
@@ -68,6 +69,12 @@ interface UploadPredictionResponse {
   prediction: Prediction;
 }
 
+interface DaySummary {
+  date: string;
+  count: number;
+  size_bytes?: number;
+}
+
 // ============ State ============
 const activeTab = ref<"label" | "train" | "classify">("label");
 
@@ -75,10 +82,14 @@ const activeTab = ref<"label" | "train" | "classify">("label");
 const images = ref<ImageItem[]>([]);
 const currentIndex = ref(0);
 const showUnlabeledOnly = ref(true);
+const availableDays = ref<DaySummary[]>([]);
+const selectedDay = ref<string | null>(null);
+const dayManuallyChosen = ref(false);
 const labeledCount = ref(0);
 const totalCount = ref(0);
 const unlabeledCount = ref(0);
 const labeledByClass = ref<Record<string, number>>({});
+const totalStorageBytes = ref(0);
 const labeling = ref(false);
 const clearingLabels = ref(false);
 const clearMessage = ref("");
@@ -127,6 +138,13 @@ const progress = computed(() => {
   return Math.round((labeled / total) * 100);
 });
 
+const selectedDaySummary = computed(
+  () =>
+    availableDays.value.find((d) => d.date === selectedDay.value) || null
+);
+
+const selectedDaySize = computed(() => selectedDaySummary.value?.size_bytes ?? null);
+
 const classBreakdown = computed(() =>
   skystateOptions.map((opt) => ({
     ...opt,
@@ -173,6 +191,18 @@ const skystateOptions = [
 ];
 
 // ============ Labeling Functions ============
+function formatBytes(bytes?: number | null) {
+  if (!bytes || bytes < 0) return "0 B";
+  const units = ["B", "KB", "MB", "GB", "TB"];
+  let value = bytes;
+  let idx = 0;
+  while (value >= 1024 && idx < units.length - 1) {
+    value /= 1024;
+    idx++;
+  }
+  return `${value.toFixed(value >= 10 ? 0 : 1)} ${units[idx]}`;
+}
+
 async function fetchImages() {
   try {
     const params = new URLSearchParams();
@@ -180,6 +210,7 @@ async function fetchImages() {
       params.set("limit", String(imageLimit));
     }
     if (showUnlabeledOnly.value) params.set("unlabeled", "1");
+    if (selectedDay.value) params.set("date", selectedDay.value);
 
     const query = params.toString();
     const res = await fetch(
@@ -199,6 +230,40 @@ async function fetchImages() {
   }
 }
 
+async function fetchAvailableDays() {
+  try {
+    const res = await fetch("/api/dataset/days");
+    if (res.ok) {
+      const data = await res.json();
+      const days: DaySummary[] = data.days || [];
+      availableDays.value = days;
+      const hasSelection =
+        !!selectedDay.value && days.some((d) => d.date === selectedDay.value);
+
+      if (selectedDay.value && !hasSelection && days.length) {
+        selectedDay.value = days[0].date;
+      } else if (!selectedDay.value && !dayManuallyChosen.value && days.length) {
+        selectedDay.value = days[0].date;
+      }
+    }
+  } catch (e) {
+    console.error("Failed to fetch days:", e);
+  }
+}
+
+async function refreshImages() {
+  await fetchAvailableDays();
+  await fetchImages();
+}
+
+function onDayChange(event: Event) {
+  const value = (event.target as HTMLSelectElement).value;
+  dayManuallyChosen.value = true;
+  selectedDay.value = value || null;
+  currentIndex.value = 0;
+  refreshImages();
+}
+
 async function fetchStats() {
   try {
     const res = await fetch("/api/dataset/stats");
@@ -208,6 +273,7 @@ async function fetchStats() {
       totalCount.value = data.total ?? 0;
       unlabeledCount.value = data.unlabeled ?? 0;
       labeledByClass.value = data.by_class ?? {};
+      totalStorageBytes.value = data.total_size_bytes ?? 0;
     } else {
       // Fallback to old behavior if stats route is unavailable
       const alt = await fetch("/api/dataset/images");
@@ -217,6 +283,7 @@ async function fetchStats() {
         labeledCount.value = items.filter((i: ImageItem) => i.skystate).length;
         unlabeledCount.value = Math.max((data.count || 0) - labeledCount.value, 0);
         labeledByClass.value = {};
+        totalStorageBytes.value = 0;
       }
     }
   } catch (e) {
@@ -595,7 +662,7 @@ watch(activeTab, (tab) => {
 
 // ============ Lifecycle ============
 onMounted(() => {
-  fetchImages();
+  refreshImages();
   fetchStats();
   fetchStatus();
   fetchModelInfo();
@@ -732,6 +799,39 @@ onUnmounted(() => {
               </button>
               <span class="danger-hint">Clears every label; images are kept.</span>
             </div>
+            <div class="day-filter">
+              <label class="day-filter-label" for="day-select">
+                <span class="mdi mdi-calendar"></span>
+                <span>Day</span>
+              </label>
+              <select
+                id="day-select"
+                class="day-select"
+                :value="selectedDay || ''"
+                @change="onDayChange"
+              >
+                <option value="">All days</option>
+                <option
+                  v-for="day in availableDays"
+                  :key="day.date"
+                  :value="day.date"
+                >
+                  {{ day.date }} ({{ day.count }} imgs)
+                </option>
+              </select>
+            </div>
+            <div
+              class="storage-pill"
+              title="Total disk space used by all images"
+            >
+              <span class="mdi mdi-database"></span>
+              <div class="storage-text">
+                <span class="storage-label">Storage</span>
+                <span class="storage-value">{{
+                  formatBytes(totalStorageBytes)
+                }}</span>
+              </div>
+            </div>
             <label class="toggle">
               <input
                 type="checkbox"
@@ -756,7 +856,7 @@ onUnmounted(() => {
               <span class="toggle-slider"></span>
               <span class="toggle-label">Load all (slower)</span>
             </label>
-            <button class="icon-btn" @click="fetchImages()" title="Refresh">
+            <button class="icon-btn" @click="refreshImages()" title="Refresh">
               <span class="mdi mdi-refresh"></span>
             </button>
           </div>
@@ -847,7 +947,17 @@ onUnmounted(() => {
               <div class="timeline-header">
                 <span class="mdi mdi-filmstrip-box-multiple"></span>
                 <span>Timeline</span>
-                <span class="timeline-count">{{ images.length }} images</span>
+                <span class="timeline-count">
+                  {{ selectedDay ? selectedDay : "All days" }} ·
+                  {{ images.length }} images
+                </span>
+                <span
+                  v-if="selectedDaySize !== null"
+                  class="timeline-size"
+                  :title="`Images from ${selectedDay || 'all days'}`"
+                >
+                  {{ formatBytes(selectedDaySize) }}
+                </span>
               </div>
               <div class="timeline-track">
                 <button
@@ -1724,6 +1834,66 @@ body {
   display: flex;
   align-items: center;
   gap: 1rem;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+}
+
+.day-filter {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.65rem;
+  background: #18181b;
+  border: 1px solid #27272a;
+  border-radius: 10px;
+}
+
+.day-filter-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.875rem;
+  color: #a1a1aa;
+}
+
+.day-select {
+  background: #0f0f15;
+  color: #fff;
+  border: 1px solid #27272a;
+  border-radius: 8px;
+  padding: 0.5rem 0.75rem;
+  font-size: 0.95rem;
+}
+
+.storage-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.65rem 0.85rem;
+  background: #18181b;
+  border: 1px solid #27272a;
+  border-radius: 12px;
+}
+
+.storage-pill .mdi {
+  color: #8b5cf6;
+  font-size: 1.2rem;
+}
+
+.storage-text {
+  display: flex;
+  flex-direction: column;
+  line-height: 1.2;
+}
+
+.storage-label {
+  font-size: 0.75rem;
+  color: #a1a1aa;
+}
+
+.storage-value {
+  font-weight: 600;
+  color: #e4e4e7;
 }
 
 .toggle {
@@ -1982,6 +2152,15 @@ body {
   margin-left: auto;
   font-size: 0.75rem;
   color: #52525b;
+}
+
+.timeline-size {
+  font-size: 0.75rem;
+  color: #a1a1aa;
+  padding: 0.35rem 0.6rem;
+  background: #18181b;
+  border: 1px solid #27272a;
+  border-radius: 8px;
 }
 
 .timeline-track {

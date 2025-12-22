@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	_ "modernc.org/sqlite"
@@ -61,7 +62,33 @@ CREATE TABLE IF NOT EXISTS labels (
 CREATE INDEX IF NOT EXISTS idx_images_fetched_at ON images(fetched_at);
 `
 	_, err := s.DB.Exec(schema)
-	return err
+	if err != nil {
+		return err
+	}
+
+	// Backfill optional columns that may not exist in older databases.
+	if err := ensureColumn(s.DB, "images", "size_bytes", "INTEGER NOT NULL DEFAULT 0"); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// ensureColumn adds the column if it's missing (idempotent for repeated migrations).
+func ensureColumn(db *sql.DB, table, column, columnDef string) error {
+	var count int
+	query := fmt.Sprintf(`SELECT COUNT(*) FROM pragma_table_info('%s') WHERE name = ?`, table)
+	if err := db.QueryRow(query, column).Scan(&count); err != nil {
+		return fmt.Errorf("check column %s.%s: %w", table, column, err)
+	}
+	if count > 0 {
+		return nil
+	}
+	ddl := fmt.Sprintf(`ALTER TABLE %s ADD COLUMN %s %s`, table, column, columnDef)
+	if _, err := db.Exec(ddl); err != nil {
+		return fmt.Errorf("add column %s.%s: %w", table, column, err)
+	}
+	return nil
 }
 
 type Image struct {
@@ -69,21 +96,23 @@ type Image struct {
 	Path      string
 	SHA256    string
 	FetchedAt time.Time
+	SizeBytes int64
 }
 
 type DatasetStats struct {
-	Total     int            `json:"total"`
-	Labeled   int            `json:"labeled"`
-	Unlabeled int            `json:"unlabeled"`
-	ByClass   map[string]int `json:"by_class"`
+	Total          int            `json:"total"`
+	Labeled        int            `json:"labeled"`
+	Unlabeled      int            `json:"unlabeled"`
+	ByClass        map[string]int `json:"by_class"`
+	TotalSizeBytes int64          `json:"total_size_bytes"`
 }
 
-func (s *Store) UpsertImage(id, path, sha256 string, fetchedAt time.Time) error {
+func (s *Store) UpsertImage(id, path, sha256 string, fetchedAt time.Time, sizeBytes int64) error {
 	_, err := s.DB.Exec(
-		`INSERT INTO images(id, path, sha256, fetched_at)
-		 VALUES(?, ?, ?, ?)
-		 ON CONFLICT(sha256) DO UPDATE SET path=excluded.path, fetched_at=excluded.fetched_at`,
-		id, path, sha256, fetchedAt.UTC().Format(time.RFC3339),
+		`INSERT INTO images(id, path, sha256, fetched_at, size_bytes)
+		 VALUES(?, ?, ?, ?, ?)
+		 ON CONFLICT(sha256) DO UPDATE SET path=excluded.path, fetched_at=excluded.fetched_at, size_bytes=excluded.size_bytes`,
+		id, path, sha256, fetchedAt.UTC().Format(time.RFC3339), sizeBytes,
 	)
 	return err
 }
@@ -177,6 +206,10 @@ WHERE l.image_id IS NULL`).Scan(&stats.Unlabeled); err != nil {
 		return stats, fmt.Errorf("count unlabeled: %w", err)
 	}
 
+	if err := s.DB.QueryRow(`SELECT COALESCE(SUM(size_bytes), 0) FROM images`).Scan(&stats.TotalSizeBytes); err != nil {
+		return stats, fmt.Errorf("sum sizes: %w", err)
+	}
+
 	return stats, nil
 }
 
@@ -185,33 +218,47 @@ type ImageWithLabel struct {
 	Path      string    `json:"path"`
 	SHA256    string    `json:"sha256"`
 	FetchedAt time.Time `json:"fetched_at"`
+	SizeBytes int64     `json:"size_bytes"`
 
 	Skystate  *string    `json:"skystate,omitempty"`
 	Meteor    *bool      `json:"meteor,omitempty"`
 	LabeledAt *time.Time `json:"labeled_at,omitempty"`
 }
 
-func (s *Store) ListImages(limit int, unlabeledOnly bool) ([]ImageWithLabel, error) {
+func (s *Store) ListImages(limit int, unlabeledOnly bool, day string) ([]ImageWithLabel, error) {
 	useLimit := limit > 0
 
 	var q string
 	var args []any
+	var where []string
+
+	if day != "" {
+		where = append(where, "DATE(i.fetched_at) = ?")
+		args = append(args, day)
+	}
+
 	if unlabeledOnly {
 		q = `
-SELECT i.id, i.path, i.sha256, i.fetched_at,
+SELECT i.id, i.path, i.sha256, i.fetched_at, i.size_bytes,
        NULL as skystate, NULL as meteor, NULL as labeled_at
 FROM images i
 LEFT JOIN labels l ON l.image_id = i.id
-WHERE l.image_id IS NULL
-ORDER BY i.fetched_at DESC`
+`
+		where = append(where, "l.image_id IS NULL")
 	} else {
 		q = `
-SELECT i.id, i.path, i.sha256, i.fetched_at,
+SELECT i.id, i.path, i.sha256, i.fetched_at, i.size_bytes,
        l.skystate, l.meteor, l.labeled_at
 FROM images i
 LEFT JOIN labels l ON l.image_id = i.id
-ORDER BY i.fetched_at DESC`
+`
 	}
+
+	if len(where) > 0 {
+		q += "WHERE " + strings.Join(where, " AND ") + "\n"
+	}
+
+	q += "ORDER BY i.fetched_at DESC"
 
 	if useLimit {
 		q += "\nLIMIT ?"
@@ -228,12 +275,13 @@ ORDER BY i.fetched_at DESC`
 	for rows.Next() {
 		var (
 			id, path, sha256, fetchedAtStr string
+			sizeBytes                      int64
 			skystateNS                     sql.NullString
 			meteorNI                       sql.NullInt64
 			labeledAtNS                    sql.NullString
 		)
 
-		if err := rows.Scan(&id, &path, &sha256, &fetchedAtStr, &skystateNS, &meteorNI, &labeledAtNS); err != nil {
+		if err := rows.Scan(&id, &path, &sha256, &fetchedAtStr, &sizeBytes, &skystateNS, &meteorNI, &labeledAtNS); err != nil {
 			return nil, fmt.Errorf("scan: %w", err)
 		}
 
@@ -248,6 +296,7 @@ ORDER BY i.fetched_at DESC`
 			Path:      path,
 			SHA256:    sha256,
 			FetchedAt: fetchedAt,
+			SizeBytes: sizeBytes,
 		}
 
 		if skystateNS.Valid {
@@ -272,5 +321,37 @@ ORDER BY i.fetched_at DESC`
 		return nil, fmt.Errorf("rows: %w", err)
 	}
 
+	return out, nil
+}
+
+type DaySummary struct {
+	Date      string `json:"date"`
+	Count     int    `json:"count"`
+	SizeBytes int64  `json:"size_bytes"`
+}
+
+// ListDays returns available days (UTC) with counts and total size, newest first.
+func (s *Store) ListDays() ([]DaySummary, error) {
+	rows, err := s.DB.Query(`
+SELECT DATE(fetched_at) as day, COUNT(*) as cnt, COALESCE(SUM(size_bytes), 0) as total_size
+FROM images
+GROUP BY day
+ORDER BY day DESC`)
+	if err != nil {
+		return nil, fmt.Errorf("list days: %w", err)
+	}
+	defer rows.Close()
+
+	var out []DaySummary
+	for rows.Next() {
+		var d DaySummary
+		if err := rows.Scan(&d.Date, &d.Count, &d.SizeBytes); err != nil {
+			return nil, fmt.Errorf("scan day: %w", err)
+		}
+		out = append(out, d)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("rows: %w", err)
+	}
 	return out, nil
 }

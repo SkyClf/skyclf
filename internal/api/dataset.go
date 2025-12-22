@@ -23,6 +23,7 @@ func (h *DatasetHandler) RegisterRoutes(mux *http.ServeMux) {
 	// You should either disable ImagesHandler.listImages or change this route.
 	mux.HandleFunc("GET /api/dataset/images", h.handleListImages)
 	mux.HandleFunc("GET /api/dataset/stats", h.handleStats)
+	mux.HandleFunc("GET /api/dataset/days", h.handleListDays)
 	mux.HandleFunc("POST /api/labels", h.handleSetLabel)
 	mux.HandleFunc("POST /api/labels/reset", h.handleClearLabels)
 }
@@ -39,7 +40,16 @@ func (h *DatasetHandler) handleListImages(w http.ResponseWriter, r *http.Request
 		}
 	}
 
-	items, err := h.st.ListImages(limit, unlabeled)
+	var day string
+	if raw := strings.TrimSpace(q.Get("date")); raw != "" {
+		if _, err := time.Parse("2006-01-02", raw); err != nil {
+			http.Error(w, "invalid date format; use YYYY-MM-DD", http.StatusBadRequest)
+			return
+		}
+		day = raw
+	}
+
+	items, err := h.st.ListImages(limit, unlabeled, day)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -60,6 +70,17 @@ func (h *DatasetHandler) handleStats(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, stats)
+}
+
+func (h *DatasetHandler) handleListDays(w http.ResponseWriter, r *http.Request) {
+	days, err := h.st.ListDays()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"days": days,
+	})
 }
 
 type setLabelRequest struct {
