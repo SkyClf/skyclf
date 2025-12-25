@@ -54,6 +54,7 @@ const currentDaySummary = computed(() => {
 async function loadData() {
   await store.fetchDays();
   await store.fetchStats();
+  // Initialer Load - danach reagiert der watch
   await loadImages();
 }
 
